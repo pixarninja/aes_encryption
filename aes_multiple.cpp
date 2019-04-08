@@ -15,6 +15,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <time.h>
 
 using namespace std;
 
@@ -115,14 +116,11 @@ unsigned int RotWord(unsigned int w) {
 void ExpandKey() {
     unsigned int tmp;
     int i;
-    int counter = 1;
 
     /* Manually set the first 4 words in the expanded key */
     for(i = 0; i < 4; i++) {
         w[i] = (key[4*i] << 24) | (key[4*i + 1] << 16) | (key[4*i + 2] << 8) | key[4*i + 3];
     }
-
-    printf("\nAuxiliary Function:\n--------------------------------\n");
 
     /* Generate the rest of the expanded key */
     for(i = 4; i < 44; i++) {
@@ -130,15 +128,11 @@ void ExpandKey() {
         if(i % 4 == 0) {
             /* Substitute and rotate */
             tmp = RotWord(tmp);
-            printf("RotWord (w%d) = %02hhx %02hhx %02hhx %02hhx = x%d\n", i - 1, (tmp >> 24) & 0xFF, (tmp >> 16) & 0xFF, (tmp >> 8) & 0xFF, tmp & 0xFF, counter);
 
             tmp = SubWord(tmp);
-            printf("SubWord (x%d) = %02hhx %02hhx %02hhx %02hhx = y%d\n", counter, (tmp >> 24) & 0xFF, (tmp >> 16) & 0xFF, (tmp >> 8) & 0xFF, tmp & 0xFF, counter);
 
             /* The three rightmost bytes are always 0 */
-            printf("Rcon (%d) = %02hhx 00 00 00\n", i/4, RC[i/4 - 1]);
             tmp = tmp ^ (RC[i / 4 - 1] << 24);
-            printf("y%d ^ Rcon (%d) = %02hhx %02hhx %02hhx %02hhx = z%d\n\n", counter, RC[i/4], (tmp >> 24) & 0xFF, (tmp >> 16) & 0xFF, (tmp >> 8) & 0xFF, tmp & 0xFF, counter);
         }
 
         w[i] = w[i - 4] ^ tmp;
@@ -181,8 +175,6 @@ void PrintRoundKey() {
 
 /* AddRoundKey protocol */
 void AddRoundKey() {
-    PrintRoundKey();
-
     /* XOR each byte of state[] with w[i,j] */
     for(int i = 0; i < 4; i++) {
         state[i] ^= w[i + count * 4];
@@ -298,6 +290,22 @@ void MixColumns() {
     memcpy(state, calculated, 16);
 }
 
+int CompareRounds(unsigned int *a, unsigned int *b) {
+    int i;
+    int j;
+    int diff = 0;
+
+    for(i = 0; i < 4; i++) {
+        for(j = 0; j < 32; j++) {
+            if (((a[i] >> j) & 1) != ((b[i] >> j) & 1)) { 
+                diff++; 
+            }
+        }
+    }
+
+    return diff;
+}
+
 int main(int argc, char *argv[])
 {
     if(argc != 2) {
@@ -306,14 +314,17 @@ int main(int argc, char *argv[])
     }
 
     int i;
-    char *input = new char[PT_SIZE + 1];
-    strncpy(input, argv[1], PT_SIZE);
-    input[PT_SIZE] = '\0';
+    int k;
+    char **inputs = new char *[4];
+    for(i = 0; i < 4; i++) {
+        inputs[i] = new char[PT_SIZE];
+        strncpy(inputs[i], argv[1], PT_SIZE);
+    }
 
     /* Parse plaintext */
     unsigned int pt[PT_SIZE / 2];
     for(i = 0; i < PT_SIZE; i += 2) {
-        char s[2] = { input[i], input[i + 1] };
+        char s[2] = { inputs[0][i], inputs[0][i + 1] };
         sscanf(s, "%x", &(pt[i / 2])); 
     }
 
@@ -321,63 +332,133 @@ int main(int argc, char *argv[])
     for(i = 0; i < PT_SIZE / 2; i++) {
         printf("%02x ", pt[i]);
     }
-    printf("\n\n");
+    printf("\n");
 
     /* Initialize S-Box */
     InitializeSbox();
-    PrintSbox();
 
     /* Expand Key */
     ExpandKey();
-    PrintExpandedKey();
 
-    /* Parse plaintext into block */
-    for(i = 0; i < 4; i++) {
-        state[i] = (pt[4*i] << 24) | (pt[4*i + 1] << 16) | (pt[4*i + 2] << 8) | pt[4*i + 3];
-    }
-    PrintState();
+    unsigned int rounds[12][4];
+    bool stored = false;
+    int diff = 0;
+    int byte = 0;
+    int num = 0;
+    unsigned int bit;
 
-    /* Initial step into AES chain */
-    AddRoundKey();
-    count++;
+    srand(time(NULL));
 
-    /* Start the AES chain */
-    for(i = 0; i < 9; i++) {
-        printf("\n(%d) Start of Round:\n-------------------\n", count);
-        PrintState();
+    for(k = 0; k < 4; k++) {
+        count = 0;
 
-        SubstituteBytes();
-        printf("\n(%d) Substitute Bytes:\n---------------------\n", count);
-        PrintState();
+        /* Parse plaintext */
+        unsigned int pt[PT_SIZE / 2];
+        for(i = 0; i < PT_SIZE; i += 2) {
+            char s[2] = { inputs[k][i], inputs[k][i + 1] };
+            sscanf(s, "%x", &(pt[i / 2])); 
+        }
 
-        ShiftRows();
-        printf("\n(%d) Shift Rows:\n---------------\n", count);
-        PrintState();
+        /* Parse plaintext into block */
+        for(i = 0; i < 4; i++) {
+            state[i] = (pt[4*i] << 24) | (pt[4*i + 1] << 16) | (pt[4*i + 2] << 8) | pt[4*i + 3];
+        }
 
-        MixColumns();
-        printf("\n(%d) Mix Columns:\n----------------\n", count);
-        PrintState();
+        /* Flip a random bit of each extra input */
+        if(k > 0) {
+            while(true) {
+                byte = rand() % 4;
+
+                bit = 0x01;
+                num = rand() % 32;
+                bit = bit << (31 - num);
+
+                /* Flip bit */
+                if ((state[byte] >> num) & 1) { 
+                    //state[byte] &= ~bit;
+                    continue;
+                }
+                else {
+                    state[byte] |= bit;
+                    break;
+                }
+            }
+            printf("\nAltered bit %d of byte %d for input %d\n\n", num, byte, k);
+
+            PrintState();
+        }
+
+        /* Initial step into AES chain */
+        if(!stored) {
+            memcpy(rounds[count], state, 16);
+        }
+        else {
+            printf("\nRound %d:\n", -1);
+            printf("%08x%08x%08x%08x\n", rounds[count][0], rounds[count][1], rounds[count][2], rounds[count][3]);
+            printf("%08x%08x%08x%08x\n", state[0], state[1], state[2], state[3]);
+            diff = CompareRounds(rounds[count], state);
+            printf("Bits Different: %d\n", diff);
+        }
 
         AddRoundKey();
+
+        if(!stored) {
+            memcpy(rounds[count + 1], state, 16);
+        }
+        else {
+            printf("\nRound %d:\n", count);
+            printf("%08x%08x%08x%08x\n", rounds[count + 1][0], rounds[count + 1][1], rounds[count + 1][2], rounds[count + 1][3]);
+            printf("%08x%08x%08x%08x\n", state[0], state[1], state[2], state[3]);
+            diff = CompareRounds(rounds[count + 1], state);
+            printf("Bits Different: %d\n", diff);
+        }
+
         count++;
+
+        /* Start the AES chain */
+        for(i = 0; i < 9; i++) {
+            SubstituteBytes();
+
+            ShiftRows();
+
+            MixColumns();
+
+            AddRoundKey();
+
+            if(!stored) {
+                memcpy(rounds[count + 1], state, 16);
+            }
+            else {
+                printf("\nRound %d:\n", count);
+                printf("%08x%08x%08x%08x\n", rounds[count + 1][0], rounds[count + 1][1], rounds[count + 1][2], rounds[count + 1][3]);
+                printf("%08x%08x%08x%08x\n", state[0], state[1], state[2], state[3]);
+                diff = CompareRounds(rounds[count + 1], state);
+                printf("Bits Different: %d\n", diff);
+            }
+
+            count++;
+        }
+
+        SubstituteBytes();
+
+        ShiftRows();
+
+        AddRoundKey();
+
+        if(!stored) {
+            memcpy(rounds[count + 1], state, 16);
+        }
+        else {
+            printf("\nRound %d:\n", count);
+            printf("%08x%08x%08x%08x\n", rounds[count + 1][0], rounds[count + 1][1], rounds[count + 1][2], rounds[count + 1][3]);
+            printf("%08x%08x%08x%08x\n", state[0], state[1], state[2], state[3]);
+            diff = CompareRounds(rounds[count + 1], state);
+            printf("Bits Different: %d\n", diff);
+        }
+
+        stored = true;
+        printf("\n");
     }
-
-    printf("\n(%d) Start of Round:\n-------------------\n", count);
-    PrintState();
-
-    SubstituteBytes();
-    printf("\n(%d) Substitute Bytes:\n---------------------\n", count);
-    PrintState();
-
-    ShiftRows();
-    printf("\n(%d) Shift Rows:\n---------------\n", count);
-    PrintState();
-
-    AddRoundKey();
-    count++;
-
-    printf("\n(%d) Final Output:\n------------------\n", count);
-    PrintState();
 
     return 0;
 }
