@@ -7,14 +7,14 @@
  */
 
 #define ROTL8(x,shift) ((uint8_t) ((x) << (shift)) | ((x) >> (8 - (shift))))
+#define KEY_SIZE 32
+#define PT_SIZE 32
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
-
-#include "round.h"
 
 using namespace std;
 
@@ -27,6 +27,10 @@ unsigned int key[16] = { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0
 unsigned char RC[10] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36 };
 /* Expanded key, 44 4-byte words */
 unsigned int w[44];
+/* State Block, 4 4-byte words */
+unsigned int state[4] = { 0, 0, 0, 0 };
+/* Round counter */
+int count = 0;
 
 /* Generate S-Box (taken from https://en.wikipedia.org/wiki/Rijndael_S-box) */
 void InitializeSbox() {
@@ -86,13 +90,8 @@ unsigned int SubWord(unsigned int w) {
         unsigned int tmp = (w >> (24 - i * 8)) & 0xFF;
 
         /* Calculate the subsituted byte and store in out */
-        unsigned int input = tmp;
-        int row = (tmp >> 4) & 0xF;
-        int col = tmp & 0xF;
         tmp = CalculateSboxValue(tmp);
         out |= (tmp << (24 - i * 8));
-
-        //printf("... S-Box(%02x)[%01x][%01x] = %02x, out = %x\n", input, row, col, tmp, out);
     }
 
     return out;
@@ -143,6 +142,7 @@ void ExpandKey() {
     }
 }
 
+/* Print the Expanded Key in a readable format */
 void PrintExpandedKey() {
     printf("\nExpanded Key:\n-----------------\n");
 
@@ -155,17 +155,68 @@ void PrintExpandedKey() {
     }
 }
 
+/* Print the State in a readable format */
+void PrintState() {
+    int i;
+    for(i = 0; i < 4; i++) {
+        printf("%02x %02x %02x %02x\n", (state[0] >> (24 - 8*i)) & 0xFF, (state[1] >> (24 - 8*i)) & 0xFF, (state[2] >> (24 - 8*i)) & 0xFF, (state[3] >> (24 - 8*i)) & 0xFF);
+    }
+    printf("\n");
+}
+
+/* Print the Round Key in a readable format */
+void PrintRoundKey() {
+    printf("\n(%d) Round Key:\n--------------\n", count);
+
+    int i;
+    for(i = 0 + count * 4; i < 4 + count * 4; i++) {
+        printf("%02x %02x %02x %02x\n", (w[0] >> (24 - 8*i)) & 0xFF, (w[1] >> (24 - 8*i)) & 0xFF, (w[2] >> (24 - 8*i)) & 0xFF, (w[3] >> (24 - 8*i)) & 0xFF);
+    }
+    printf("\n");
+}
+
+/* AddRoundKey protocol */
+void AddRoundKey() {
+    PrintRoundKey();
+
+    /* XOR each byte of state[] with w[i,j] */
+    for(int i = 0; i < 4; i++) {
+        state[i] ^= w[i + count * 4];
+    }
+}
+
+/* SubstituteBytes Protocol */
+void SubstituteBytes() {
+    int i;
+    for(i = 0; i < 4; i++) {
+        state[i] = SubWord(state[i]);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     if(argc != 2) {
         printf("\nPlease enter a plaintext to encrypt in the format of './encrypt <16-character plaintext>'. Please try again.\n\nExiting Program.\n\n");
         return 1;
     }
-    char *pt = new char[PT_SIZE + 1];
-    strncpy(pt, argv[1], PT_SIZE);
-    pt[PT_SIZE] = '\0';
 
-    printf("\nThe plaintext you entered was: %s\n\n", pt);
+    int i;
+    char *input = new char[PT_SIZE + 1];
+    strncpy(input, argv[1], PT_SIZE);
+    input[PT_SIZE] = '\0';
+
+    /* Parse plaintext */
+    unsigned int pt[PT_SIZE / 2];
+    for(i = 0; i < PT_SIZE; i += 2) {
+        char s[2] = { input[i], input[i + 1] };
+        sscanf(s, "%x", &(pt[i / 2])); 
+    }
+
+    printf("\nThe plaintext you entered was: ");
+    for(i = 0; i < PT_SIZE / 2; i++) {
+        printf("%02x ", pt[i]);
+    }
+    printf("\n\n");
 
     /* Initialize S-Box */
     InitializeSbox();
@@ -174,6 +225,28 @@ int main(int argc, char *argv[])
     /* Expand Key */
     ExpandKey();
     PrintExpandedKey();
+
+    /* Parse plaintext into block */
+    for(i = 0; i < 4; i++) {
+        state[i] = (pt[4*i] << 24) | (pt[4*i + 1] << 16) | (pt[4*i + 2] << 8) | pt[4*i + 3];
+    }
+    PrintState();
+
+    /* Initial step into AES chain */
+    AddRoundKey();
+    count++;
+
+    /* Start the AES chain */
+    for(i = 0; i < 1; i++) {
+        printf("\n(%d) Start of Round:\n-------------------\n", count);
+        PrintState();
+
+        SubstituteBytes();
+        printf("\n(%d) Substitute Bytes:\n---------------------\n", count);
+        PrintState();
+
+        count++;
+    }
 
     return 0;
 }
